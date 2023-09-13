@@ -1,0 +1,421 @@
+import tkinter as tk
+import bcrypt
+import keyboard
+import os
+import sys
+import pyodbc
+from tkinter import messagebox
+from tkinter import filedialog
+from datetime import datetime
+from tkinter import ttk
+
+# Conecte-se ao banco de dados
+server = '86-ADM02\SQLEXPRESS'
+database = 'triagem'  # Substitua pelo nome do seu banco de dados
+username = 'Fernando'  # Substitua pelo nome de usuário do SQL Server
+password = '123456'  # Substitua pela senha do usuário do SQL Server
+
+# Conecte-se ao banco de dados
+try:
+    conexao = pyodbc.connect('DRIVER={SQL Server};SERVER=' + server + ';DATABASE=' + database + ';UID=' + username + ';PWD=' + password)
+    print("Conexão bem-sucedida!")
+
+except Exception as e:
+    print(f"Erro ao conectar: {e}")
+    sys.exit()
+
+# Obtenha o diretório atual
+diretorio_atual = os.getcwd()
+
+# Imprima o diretório atual
+print("Diretório atual:", diretorio_atual)
+
+# Função para criar a tabela de usuários no banco de dados apenas se não existir
+def criar_tabela_usuarios(conexao):
+    cursor = conexao.cursor()
+    cursor.execute('''
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'usuarios')
+        BEGIN
+            CREATE TABLE usuarios (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                nome NVARCHAR(255) NOT NULL,
+                senha_hash VARBINARY(60) NOT NULL
+            );
+        END
+    ''')
+    conexao.commit()
+
+# Função para adicionar um novo usuário com senha segura usando bcrypt
+def adicionar_usuario(conexao, nome, senha):
+    cursor = conexao.cursor()
+    # Certifique-se de que a senha é uma string antes de codificar em UTF-8
+    if isinstance(senha, str):
+        senha = senha.encode('utf-8')
+    # Gerar um hash de senha seguro usando bcrypt
+    senha_hash = bcrypt.hashpw(senha, bcrypt.gensalt())
+    cursor.execute("INSERT INTO usuarios (nome, senha_hash) VALUES (?, ?)", (nome, senha_hash))
+    conexao.commit()
+
+# Função para verificar se as credenciais de login são válidas
+def verificar_login(conexao, nome, senha):
+    cursor = conexao.cursor()
+    cursor.execute("SELECT senha_hash FROM usuarios WHERE nome=?", (nome,))
+    resultado = cursor.fetchone()
+    if resultado:
+        senha_hash = resultado[0]  # Não é necessário codificar aqui, pois já deve ser uma string válida
+        senha = senha.encode('utf-8')  # Codifique a senha em bytes
+        # Verificar a senha usando bcrypt
+        if bcrypt.checkpw(senha, senha_hash):
+            return True
+    return False
+
+def encerrar_programa():
+    conexao.close()  # Feche a conexão com o banco de dados, se necessário
+    sys.exit()
+
+# Função para processar o login
+def fazer_login():
+    global janela_login
+    nome = entrada_nome.get()
+    senha = entrada_senha.get()
+
+    if verificar_login(conexao, nome, senha):
+        messagebox.showinfo("Login Bem-sucedido", "Login bem-sucedido!")
+        janela_login.destroy()
+    else:
+        messagebox.showerror("Login Falhou", "Credenciais de login inválidas!")
+        sys.exit()
+
+# Função para processar a criação de uma nova conta
+def criar_conta():
+    global entrada_nome, entrada_senha  # Tornar as entradas globais
+    nome = entrada_nome.get()
+    senha = entrada_senha.get().encode('utf-8')
+    
+    if nome.strip() == "" or senha.strip() == "":
+        messagebox.showerror("Erro", "Nome de usuário e senha são obrigatórios.")
+        return
+    
+    # Verificar se o nome de usuário já existe
+    cursor = conexao.cursor()
+    cursor.execute("SELECT nome FROM usuarios WHERE nome=?", (nome,))
+    if cursor.fetchone():
+        messagebox.showerror("Erro", "Nome de usuário já existe. Escolha outro.")
+    else:
+        adicionar_usuario(conexao, nome, senha)
+        messagebox.showinfo("Conta Criada", "Sua conta foi criada com sucesso!")
+
+def criar_tabela_registros(conexao):
+    cursor = conexao.cursor()
+    cursor.execute('''
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'registros_atendimento')
+        BEGIN
+            CREATE TABLE registros_atendimento (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                data_hora DATETIME NOT NULL,
+                nome_usuario NVARCHAR(255) NOT NULL,
+                tipo_atendimento NVARCHAR(255) NOT NULL,
+                descricao NVARCHAR(MAX)
+            );
+        END
+    ''')
+    conexao.commit()
+
+
+# Função principal do programa
+def main():
+    global entrada_nome, entrada_senha, janela_login, encerrar_programa  # Tornar as entradas globais
+    criar_tabela_usuarios(conexao)
+
+    janela_login = tk.Tk()
+    janela_login.title("Login")
+
+    janela_login.protocol("WM_DELETE_WINDOW", encerrar_programa)
+
+    frame = tk.Frame(janela_login)
+    frame.pack(padx=20, pady=20)
+
+    lbl_nome = tk.Label(frame, text="Nome de Usuário:")
+    lbl_nome.grid(row=0, column=0, sticky="w")
+
+    entrada_nome = tk.Entry(frame)
+    entrada_nome.grid(row=0, column=1)
+
+    lbl_senha = tk.Label(frame, text="Senha:")
+    lbl_senha.grid(row=1, column=0, sticky="w")
+
+    entrada_senha = tk.Entry(frame, show="*")
+    entrada_senha.grid(row=1, column=1)
+
+    botao_login = tk.Button(frame, text="Login", command=fazer_login)
+    botao_login.grid(row=2, column=0, pady=10)
+
+    botao_criar_conta = tk.Button(frame, text="Criar Conta", command=criar_conta)
+    botao_criar_conta.grid(row=2, column=1, pady=10)
+
+    janela_login.mainloop()
+
+if __name__ == "__main__":
+    main()
+    conexao.close()
+    
+# Inicializamos o contador de atendimentos
+contador_atendimentos = 0
+
+# Lista para armazenar os detalhes dos atendimentos
+detalhes_atendimentos = []
+
+# Variáveis globais para os widgets que serão atualizados
+label = None
+registrar_botao = None
+registrar_telefone = None
+registrar_duvida = None
+exportar_botao = None
+carregar_botao = None
+mostrar_historico_botao = None
+sair_botao = None
+idioma_combobox = None
+janela = None
+fazer_login = None
+
+# Traduções (português como idioma padrão)
+traducoes = {
+    'titulo': 'Assistência Judiciária',
+    'atendimento_label': 'Atendimentos Realizados:',
+    'registrar_botao': 'Registrar Atendimento',
+    'registrar_telefone' : 'Atendimento por Telefone',
+    'registrar_duvida': 'Dúvida no Balcão',
+    'exportar_botao': 'Exportar Dados',
+    'carregar_botao': 'Carregar Histórico',
+    'mostrar_historico_botao': 'Mostrar Histórico',
+    'sair_botao': 'Sair',
+    'historico_titulo': 'Histórico de Atendimentos',
+    'historico_vazio': 'Nenhum atendimento registrado ainda.'
+}
+
+def registrar_atendimento(conexao, nome_usuario):
+    global contador_atendimentos
+    contador_atendimentos += 1
+    data_hora = datetime.now()
+    tipo_atendimento = "Atendimento Padrão"  # Personalize o tipo conforme necessário
+    descricao = f"Atendimento {contador_atendimentos} - Data/Hora: {data_hora}"
+    
+    cursor = conexao.cursor()
+    cursor.execute("INSERT INTO registros_atendimento (data_hora, nome_usuario, tipo_atendimento, descricao) VALUES (?, ?, ?, ?)",
+                   (data_hora, nome_usuario, tipo_atendimento, descricao))
+    conexao.commit()
+    atualizar_label()
+
+# Função para registrar um atendimento
+def registrar_atendimento():
+    global contador_atendimentos
+    contador_atendimentos += 1
+    data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    registro = f"Atendimento {contador_atendimentos} - Data/Hora: {data_hora}"
+    detalhes_atendimentos.append(registro)
+    atualizar_label()
+
+# Função para registrar um atendimento por telefone
+def registrar_atendimento_telefone():
+    global contador_atendimentos
+    contador_atendimentos += 1
+    data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    registro = f"Atendimento por Telefone {contador_atendimentos} - Data/Hora: {data_hora}"
+    detalhes_atendimentos.append(registro)
+    atualizar_label()
+
+# Função para registrar um atendimento por telefone
+def registrar_duvida_balcao():
+    global contador_atendimentos
+    contador_atendimentos += 1
+    data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    registro = f"Duvida no balcao {contador_atendimentos} - Data/Hora: {data_hora}"
+    detalhes_atendimentos.append(registro)
+    atualizar_label()
+
+# Função para exportar os dados dos atendimentos para um arquivo
+def exportar_dados():
+    if detalhes_atendimentos:
+        filename = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Arquivos de Texto", "*.txt")])
+        if filename:
+            with open(filename, "w") as file:
+                file.write(f"{traducoes['titulo']} - Registro de Atendimentos\n")
+                file.write("Data de Exportacao: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
+                file.write("\n".join(detalhes_atendimentos))
+            print(f"Dados exportados para {filename}")
+
+# Função para carregar o histórico de atendimentos de um arquivo
+def carregar_historico():
+    filename = filedialog.askopenfilename(filetypes=[("Arquivos de Texto", "*.txt")])
+    if filename:
+        with open(filename, "r") as file:
+            historico = file.read()
+            detalhes_atendimentos.extend(historico.split("\n"))
+            atualizar_label()
+
+# Função para criar uma nova janela para exibir o histórico de atendimentos
+def mostrar_historico():
+    historico_janela = tk.Toplevel()
+    historico_janela.title(traducoes['historico_titulo'])
+    historico_texto = tk.Text(historico_janela)
+    historico_texto.pack()
+    
+    if detalhes_atendimentos:
+        historico_texto.insert(tk.END, "\n".join(detalhes_atendimentos))
+    else:
+        historico_texto.insert(tk.END, traducoes['historico_vazio'])
+
+# Função para atualizar o rótulo com o total de atendimentos
+def atualizar_label():
+    label.config(text=f"{traducoes['atendimento_label']} {contador_atendimentos}")
+
+# Função para carregar as traduções em inglês
+def carregar_traducoes_ingles():
+    global traducoes
+    traducoes = {
+        'titulo': 'Legal Aid',
+        'atendimento_label': 'Completed Attendances:',
+        'registrar_botao': 'Register Attendance',
+        'registrar_telefone': 'Phone Service',
+        'registrar_duvida': 'Information Desk',
+        'exportar_botao': 'Export Data',
+        'carregar_botao': 'Load History',
+        'mostrar_historico_botao': 'Show History',
+        'sair_botao': 'Exit',
+        'historico_titulo': 'Attendance History',
+        'historico_vazio': 'No attendance recorded yet.'
+    }
+    atualizar_texto_botoes()
+
+# Função para carregar as traduções em português
+def carregar_traducoes_portugues():
+    global traducoes
+    traducoes = {
+        'titulo': 'Assistência Judiciária',
+        'atendimento_label': 'Atendimentos Realizados:',
+        'registrar_botao': 'Registrar Atendimento',
+        'registrar_telefone': 'Atendimento por Telefone',
+        'registrar_duvida': 'Dúvida no Balcão',
+        'exportar_botao': 'Exportar Dados',
+        'carregar_botao': 'Carregar Histórico',
+        'mostrar_historico_botao': 'Mostrar Histórico',
+        'sair_botao': 'Sair',
+        'historico_titulo': 'Histórico de Atendimentos',
+        'historico_vazio': 'Nenhum atendimento registrado ainda.'
+    }
+    atualizar_texto_botoes()
+
+# Função para atualizar o texto dos botões com base nas traduções
+def atualizar_texto_botoes():
+    if registrar_botao:
+        registrar_botao.config(text=traducoes['registrar_botao'])
+    if registrar_telefone:
+        registrar_telefone.config(text=traducoes['registrar_telefone'])
+    if registrar_duvida:
+        registrar_duvida.config(text=traducoes['registrar_duvida'])
+    if exportar_botao:
+        exportar_botao.config(text=traducoes['exportar_botao'])
+    if carregar_botao:
+        carregar_botao.config(text=traducoes['carregar_botao'])
+    if mostrar_historico_botao:
+        mostrar_historico_botao.config(text=traducoes['mostrar_historico_botao'])
+    if sair_botao:
+        sair_botao.config(text=traducoes['sair_botao'])
+
+# Função para alternar o idioma
+def alternar_idioma(event):
+    idioma_selecionado = idioma_combobox.get()
+    if idioma_selecionado == "Português":
+        carregar_traducoes_portugues()
+    elif idioma_selecionado == "Inglês":
+        carregar_traducoes_ingles()
+
+# Função para criar a interface do usuário
+def criar_interface():
+    global label, registrar_botao, registrar_telefone, registrar_duvida, exportar_botao, carregar_botao, mostrar_historico_botao, sair_botao, idioma_combobox, janela, fazer_login
+    # Crie uma janela tkinter
+    janela = tk.Tk()
+    janela.title(traducoes['titulo'])
+
+    # Crie um widget Label para exibir a imagem
+    imagem_fundo = tk.PhotoImage(file="C:\\Users\\Fernando\\Desktop\\Controle de Atendimento\\imagem.ppm")  # Certifique-se de usar um formato suportado, como .gif ou .ppm
+    label_imagem = tk.Label(janela, image=imagem_fundo)
+    label_imagem.pack()
+
+    # Rótulo para exibir o total de atendimentos
+    label = tk.Label(janela, text=f"{traducoes['atendimento_label']} {contador_atendimentos}")
+    label.pack()
+
+    # Quadro para agrupar os botões
+    quadro_botoes = tk.Frame(janela)
+    quadro_botoes.pack()
+
+    # Botão para registrar atendimento
+    registrar_botao = tk.Button(quadro_botoes, text=traducoes['registrar_botao'], command=registrar_atendimento, bg="green")
+    registrar_botao.pack(side=tk.TOP)
+
+    # Botão para registrar atendimento por telefone
+    registrar_telefone = tk.Button(quadro_botoes, text=traducoes['registrar_telefone'], command=registrar_atendimento_telefone, bg="green")
+    registrar_telefone.pack(side=tk.TOP)
+
+    # Botão para registrar dúvida no balcão
+    registrar_duvida = tk.Button(quadro_botoes, text=traducoes['registrar_duvida'], command=registrar_duvida_balcao, bg="green")
+    registrar_duvida.pack(side=tk.TOP)
+
+    # Botão para exportar os dados
+    exportar_botao = tk.Button(quadro_botoes, text=traducoes['exportar_botao'], command=exportar_dados, bg="cyan")
+    exportar_botao.pack(side=tk.RIGHT)
+
+    # Botão para carregar o histórico de atendimentos
+    carregar_botao = tk.Button(quadro_botoes, text=traducoes['carregar_botao'], command=carregar_historico, bg="cyan")
+    carregar_botao.pack(side=tk.LEFT)
+
+    # Botão para mostrar o histórico de atendimentos
+    mostrar_historico_botao = tk.Button(quadro_botoes, text=traducoes['mostrar_historico_botao'], command=mostrar_historico, bg="cyan")
+    mostrar_historico_botao.pack()
+
+    # Botão para sair do programa
+    sair_botao = tk.Button(janela, text=traducoes['sair_botao'], command=janela.quit, bg="red")
+    sair_botao.pack()
+
+    # Crie a lista suspensa (combobox) para selecionar o idioma
+    idioma_combobox = ttk.Combobox(janela, values=["Português", "Inglês"])
+    idioma_combobox.set("Português")  # Defina o idioma padrão
+    idioma_combobox.bind("<<ComboboxSelected>>", alternar_idioma)
+    idioma_combobox.pack(side=tk.TOP)
+
+    janela.mainloop()
+
+# Função para carregar o histórico de atendimentos no início do programa
+def carregar_historico_inicial():
+    try:
+        with open("C:\\Users\\Fernando\\Desktop\\Controle de Atendimento\\registro.txt", "r") as file:
+            historico = file.read()
+            detalhes_atendimentos.extend(historico.split("\n"))
+    except FileNotFoundError:
+        # Se o arquivo não existir, não há histórico a ser carregado
+        pass    
+
+# Funções associadas aos atalhos de teclado
+def atalho_registrar():
+    registrar_atendimento()
+
+def atalho_atendimento_telefone():
+    registrar_atendimento_telefone()
+
+def atalho_duvida():
+    registrar_duvida_balcao()
+
+def sair_programa():
+    janela.quit()
+
+# Configurar os atalhos de teclado
+keyboard.add_hotkey('F1', atalho_registrar)
+keyboard.add_hotkey('F2', atalho_atendimento_telefone)
+keyboard.add_hotkey('F3', atalho_duvida)
+keyboard.add_hotkey('F4', sair_programa)
+
+# Inicie a interface do usuário
+carregar_traducoes_portugues()
+carregar_historico_inicial()
+criar_interface()
